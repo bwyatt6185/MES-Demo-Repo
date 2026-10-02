@@ -1,0 +1,152 @@
+import json
+from pyspark.sql import functions as F
+
+# Single unified depot landing location
+unified_landing = "/Volumes/main/default/medicaid_landing/all_data_sources"
+dbutils.fs.mkdirs(unified_landing)
+
+# --- 1. WRITE ALL 15 DATA SOURCES IN ONE PLACE ---
+
+# CIO & Technology
+api_logs = [
+    {"timestamp": "2026-10-01T08:14:22Z", "endpoint": "/fhir/r4/PatientAccess", "client_id": "MCO-HEALTH-A", "status_code": 200, "latency_ms": 48, "records_served": 12, "error_code": None},
+    {"timestamp": "2026-10-01T08:15:03Z", "endpoint": "/edi/x12/837P/intake", "client_id": "CLEARINGHOUSE-01", "status_code": 422, "latency_ms": 112, "records_served": 0, "error_code": "SYNTAX_ERR_SEGMENT_NM1"},
+    {"timestamp": "2026-10-01T08:16:45Z", "endpoint": "/fhir/r4/ProviderDirectory", "client_id": "PUBLIC_PORTAL", "status_code": 200, "latency_ms": 32, "records_served": 50, "error_code": None}
+]
+dbutils.fs.put(f"{unified_landing}/api_gateway_logs.json", "\n".join([json.dumps(r) for r in api_logs]), overwrite=True)
+
+edi_errors = [
+    {"interchange_id": "ISA-900214", "sender_id": "MCO-HEALTH-B", "transaction_set": "837P", "error_type": "Schema_Violation", "loop_id": "2010BA", "segment": "NM1*IL", "description": "Subscriber Medicaid ID missing valid prefix", "severity": "FATAL_REJECT"},
+    {"interchange_id": "ISA-900215", "sender_id": "CLEARINGHOUSE-01", "transaction_set": "837I", "error_type": "Code_Value_Invalid", "loop_id": "2300", "segment": "HI*BK", "description": "Invalid ICD-10 format", "severity": "WARNING"}
+]
+dbutils.fs.put(f"{unified_landing}/edi_translation_errors.json", "\n".join([json.dumps(r) for r in edi_errors]), overwrite=True)
+
+dlt_csv = """pipeline_id,pipeline_name,update_id,run_timestamp,duration_seconds,records_processed,data_quality_pass_rate,dbus_consumed,cluster_id
+89a2b234-0326-4cba-812b-80352df26843,MES_Core_Bronze_Ingest,upd-101,2026-10-01 06:00:00,420,1250000,99.82,14.5,0930-142010-abcde123
+89a2b234-0326-4cba-812b-80352df26843,MES_Silver_Harmonization,upd-102,2026-10-01 06:10:00,680,1248000,99.95,22.0,0930-142010-abcde123
+89a2b234-0326-4cba-812b-80352df26843,MES_Gold_CMS64_Mart,upd-103,2026-10-01 06:25:00,185,15400,100.0,6.2,0930-142010-abcde123
+"""
+dbutils.fs.put(f"{unified_landing}/dlt_pipeline_telemetry.csv", dlt_csv, overwrite=True)
+
+# State Medicaid Director
+enroll_csv = """month,county,aid_category,mco_id,enrolled_members,monthly_capitation_rate,total_capitation_paid
+2026-09,Guilford,MAGI Adult,MCO-HEALTH-A,14250,485.50,6918375.00
+2026-09,Guilford,Expansion Adult,MCO-HEALTH-B,9800,510.00,4998000.00
+2026-09,Forsyth,Aged/Blind/Disabled,FFS-STATE,4200,1240.00,5208000.00
+2026-09,Wake,Pregnant Women,MCO-HEALTH-B,3100,620.00,1922000.00
+"""
+dbutils.fs.put(f"{unified_landing}/monthly_enrollment_pmpm.csv", enroll_csv, overwrite=True)
+
+kpi_csv = """reporting_month,total_budget_allocated,total_ffs_claims_paid,total_mco_capitation_paid,admin_cost,medical_loss_ratio_pct,fmap_federal_share_pct
+2026-07,185000000.00,32400000.00,141200000.00,4100000.00,89.4,68.25
+2026-08,185000000.00,33100000.00,142500000.00,4250000.00,89.8,68.25
+2026-09,190000000.00,31800000.00,144800000.00,4150000.00,90.2,68.25
+"""
+dbutils.fs.put(f"{unified_landing}/executive_kpi_summary.csv", kpi_csv, overwrite=True)
+
+# Program Integrity (SURS)
+surs_csv = """billing_npi,provider_name,specialty,total_claims_submitted,total_billed_amt,total_paid_amt,denial_rate_pct,upcoding_anomaly_score,ghost_billing_risk
+NPI-1942031122,Triad Family Medicine,Family Medicine,4820,723000.00,542250.00,4.2,0.12,LOW
+NPI-1427189901,Carolinas Asthma & Allergy,Allergy & Immunology,1850,407000.00,0.00,100.0,0.88,HIGH
+NPI-1999887766,Apex Rapid Diagnostic Lab,Clinical Laboratory,18500,3700000.00,2960000.00,28.4,0.94,CRITICAL
+"""
+dbutils.fs.put(f"{unified_landing}/provider_billing_outliers.csv", surs_csv, overwrite=True)
+
+graph_json = [
+    {"source_npi": "NPI-1999887766", "target_npi": "NPI-1427189901", "relationship_type": "high_volume_cross_referral", "shared_patient_count": 642, "risk_score": 0.92, "investigation_status": "ACTIVE_SUBPOENA"},
+    {"source_npi": "NPI-1999887766", "target_npi": "NPI-1777223344", "relationship_type": "shared_commercial_address", "shared_patient_count": 89, "risk_score": 0.87, "investigation_status": "FLAGGED_FOR_AUDIT"}
+]
+dbutils.fs.put(f"{unified_landing}/collusive_network_graph.json", "\n".join([json.dumps(r) for r in graph_json]), overwrite=True)
+
+# Federal Reporting & Finance
+cms64_csv = """federal_fiscal_year,quarter,service_category_code,service_category_description,total_computable,federal_share_fmap,state_share
+2026,Q4,01A,Inpatient Hospital Services,48500000.00,33101250.00,15398750.00
+2026,Q4,02A,Outpatient Hospital Services,29400000.00,20065500.00,9334500.00
+2026,Q4,09A,Prescribed Drugs (Gross),38900000.00,26549250.00,12350750.00
+2026,Q4,09R,Prescribed Drugs Rebates Collected,-14200000.00,-9691500.00,-4508500.00
+"""
+dbutils.fs.put(f"{unified_landing}/cms64_quarterly_expenditures.csv", cms64_csv, overwrite=True)
+
+tmsis_csv = """submitting_state,reporting_period,tmsis_file_type,segment_name,record_count,cms_acceptance_status,dq_validation_warnings,dq_critical_errors
+NC,2026-09,CIP,Inpatient Claims Header,14200,ACCEPTED,18,0
+NC,2026-09,CLT,Long-Term Care Claims,6800,ACCEPTED,4,0
+NC,2026-09,CRX,Prescription Claims Header,74000,ACCEPTED,12,0
+"""
+dbutils.fs.put(f"{unified_landing}/tmsis_claims_summary.csv", tmsis_csv, overwrite=True)
+
+# Pharmacy Benefits (PBM)
+pbm_csv = """rx_claim_id,member_id,prescriber_npi,pharmacy_npi,dispense_date,ndc_code,drug_name,days_supply,quantity_dispensed,ingredient_cost,dispensing_fee,is_340b_claim,is_opioid,mme_score
+RX-501,MEM-1001,NPI-1942031122,NPI-1888001122,2026-09-10,00169368712,Metformin 500mg,30,60,14.50,4.00,false,false,0.0
+RX-502,MEM-1002,NPI-1831920031,NPI-1888001122,2026-09-12,00074379902,Humira 40mg/0.8ml,28,2,3200.00,4.00,true,false,0.0
+RX-503,MEM-1005,NPI-1942031122,NPI-1999112233,2026-09-14,00093314705,Oxycodone 10mg,14,28,48.00,4.00,false,true,45.0
+"""
+dbutils.fs.put(f"{unified_landing}/pos_rx_claims.csv", pbm_csv, overwrite=True)
+
+mdrp_csv = """rebate_invoice_id,labeler_code,drug_name,rebate_quarter,units_dispensed,unit_rebate_amt,total_rebate_billed,total_rebate_collected,dispute_code,dispute_status
+INV-2026Q3-01,00169,Metformin 500mg,2026Q3,145000,0.1250,18125.00,18125.00,None,SETTLED
+INV-2026Q3-02,00074,Humira 40mg,2026Q3,2800,950.0000,2660000.00,1980000.00,D-340B_DUPLICATE,IN_MEDIATION
+"""
+dbutils.fs.put(f"{unified_landing}/mdrp_rebate_invoicing.csv", mdrp_csv, overwrite=True)
+
+# Provider Management (PS&E)
+pse_csv = """billing_npi,legal_business_name,dba_name,taxonomy_code,specialty_description,credential_status,practice_county,practice_lat,practice_lon,medicaid_enrolled_date,revalidation_due_date
+NPI-1942031122,Triad Health Partners PLLC,Triad Family Medicine,207Q00000X,Family Medicine,ACTIVE,Guilford,36.0726,-79.7920,2021-03-15,2026-03-15
+NPI-1831920031,Piedmont Regional Health Inc,Piedmont Regional Hospital,282N00000X,General Acute Care,ACTIVE,Forsyth,36.0999,-80.2442,2018-07-01,2028-07-01
+NPI-1999887766,Apex Diagnostics LLC,Apex Rapid Diagnostic Lab,291U00000X,Clinical Medical Laboratory,SUSPENDED,Guilford,36.0850,-79.7890,2024-02-01,2026-02-01
+"""
+dbutils.fs.put(f"{unified_landing}/provider_credential_registry.csv", pse_csv, overwrite=True)
+
+adequacy_csv = """county,specialty_category,required_max_drive_time_mins,actual_avg_drive_time_mins,required_provider_to_member_ratio,actual_ratio,network_adequacy_status,primary_h3_index
+Guilford,Primary Care (Family Medicine),30,14.2,1:1200,1:850,COMPLIANT,884451660ffffff
+Forsyth,Acute Inpatient Hospital,30,11.5,1:5000,1:2400,COMPLIANT,884451661ffffff
+Caswell,Dental Services,45,56.2,1:1500,1:3400,DEFICIENT_CRITICAL,884451663ffffff
+"""
+dbutils.fs.put(f"{unified_landing}/network_adequacy_geospatial.csv", adequacy_csv, overwrite=True)
+
+# Care Management & SDOH
+evv_json = [
+    {"visit_id": "EVV-01", "member_id": "MEM-1002", "caregiver_id": "CG-88", "service_code": "T1019", "timestamp": "2026-09-21T08:01:00Z", "event": "CLOCK_IN", "gps_lat": 36.0726, "gps_lon": -79.7920, "geofence_match": True, "exception_flag": False},
+    {"visit_id": "EVV-02", "member_id": "MEM-1005", "caregiver_id": "CG-94", "service_code": "T1019", "timestamp": "2026-09-21T14:30:00Z", "event": "CLOCK_IN", "gps_lat": 35.7796, "gps_lon": -78.6382, "geofence_match": False, "exception_flag": True, "exception_reason": "GPS_OUTSIDE_APPROVED_HOME_RADIUS"}
+]
+dbutils.fs.put(f"{unified_landing}/evv_telemetry.json", "\n".join([json.dumps(r) for r in evv_json]), overwrite=True)
+
+sdoh_txt = """member_id|assessment_date|primary_sdoh_barrier|prapare_score|caseworker_narrative|high_risk_flag
+MEM-1001|2026-09-18|Transportation|8|Patient managing Type 2 Diabetes well. Reports difficulty securing consistent transportation to specialist appointments in High Point.|MEDIUM
+MEM-1005|2026-09-19|Housing & Nutrition|15|Patient reports housing instability following eviction notice. Food insecurity screen positive for 2 consecutive quarters.|HIGH
+"""
+dbutils.fs.put(f"{unified_landing}/clinical_sdoh_assessments.txt", sdoh_txt, overwrite=True)
+
+print("All 15 data source files deposited in single location:", unified_landing)
+
+# --- 2. BATCH LOAD ALL FILES INTO BRONZE DELTA TABLES ---
+
+sources = [
+    ("bronze_cio_api_gateway_logs", "api_gateway_logs.json", "json"),
+    ("bronze_cio_edi_translation_errors", "edi_translation_errors.json", "json"),
+    ("bronze_cio_pipeline_telemetry", "dlt_pipeline_telemetry.csv", "csv"),
+    ("bronze_director_enrollment_pmpm", "monthly_enrollment_pmpm.csv", "csv"),
+    ("bronze_director_executive_kpis", "executive_kpi_summary.csv", "csv"),
+    ("bronze_surs_provider_outliers", "provider_billing_outliers.csv", "csv"),
+    ("bronze_surs_collusive_graph", "collusive_network_graph.json", "json"),
+    ("bronze_finance_cms64_expenditures", "cms64_quarterly_expenditures.csv", "csv"),
+    ("bronze_finance_tmsis_summary", "tmsis_claims_summary.csv", "csv"),
+    ("bronze_pbm_pos_claims", "pos_rx_claims.csv", "csv"),
+    ("bronze_pbm_mdrp_rebates", "mdrp_rebate_invoicing.csv", "csv"),
+    ("bronze_pse_provider_registry", "provider_credential_registry.csv", "csv"),
+    ("bronze_pse_network_adequacy", "network_adequacy_geospatial.csv", "csv"),
+    ("bronze_care_evv_telemetry", "evv_telemetry.json", "json"),
+    ("bronze_care_clinical_sdoh", "clinical_sdoh_assessments.txt", "pipe")
+]
+
+for table_name, file_name, fmt in sources:
+    path = f"{unified_landing}/{file_name}"
+    if fmt == "csv":
+        df = spark.read.format("csv").option("header", "true").option("inferSchema", "true").load(path)
+    elif fmt == "pipe":
+        df = spark.read.option("sep", "|").option("header", "true").csv(path)
+    elif fmt == "json":
+        df = spark.read.json(path)
+    df.write.format("delta").mode("overwrite").saveAsTable(table_name)
+    print(f"Registered table: {table_name}")
+
+print("All Bronze tables successfully loaded from single location.")
